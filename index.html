@@ -1,0 +1,988 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>ふしぎゲームズ５</title>
+<style>
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #101018;
+  }
+  canvas {
+    width: min(900px, 96vw);
+    height: auto;
+    border-radius: 12px;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" width="900" height="600"></canvas>
+<script>
+'use strict';
+
+// ===== 基本セットアップ =====
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width;
+const H = canvas.height;
+
+const keys = new Set();
+const mouse = { x: -100, y: -100, down: false };
+let touchActive = false;
+
+function normKey(k) { return k.length === 1 ? k.toLowerCase() : k; }
+
+function canvasPos(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * (W / r.width), y: (e.clientY - r.top) * (H / r.height) };
+}
+
+// ===== 便利関数 =====
+function dist(x1, y1, x2, y2) { return Math.hypot(x2 - x1, y2 - y1); }
+function rand(a, b) { return a + Math.random() * (b - a); }
+function randInt(a, b) { return Math.floor(rand(a, b + 1)); }
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function inRect(px, py, r) { return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h; }
+
+function text(s, x, y, size = 20, color = '#fff', align = 'center', weight = '') {
+  ctx.fillStyle = color;
+  ctx.font = `${weight} ${size}px 'Hiragino Maru Gothic ProN', 'Hiragino Kaku Gothic ProN', sans-serif`;
+  ctx.textAlign = align;
+  ctx.textBaseline = 'middle';
+  ctx.fillText(s, x, y);
+}
+
+function circle(x, y, r, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function rrect(x, y, w, h, r, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+  ctx.fill();
+}
+
+const MENU_BTN = { x: W - 105, y: 8, w: 95, h: 26 };
+
+function topBar(title, info) {
+  text(title, 20, 30, 24, '#fff', 'left', 'bold');
+  rrect(MENU_BTN.x, MENU_BTN.y, MENU_BTN.w, MENU_BTN.h, 8, '#2a2a44');
+  text('← メニュー', MENU_BTN.x + MENU_BTN.w / 2, MENU_BTN.y + MENU_BTN.h / 2, 13, '#aab', 'center');
+  if (info) text(info, MENU_BTN.x - 10, 22, 17, '#ffd54f', 'right');
+}
+
+function gameOverOverlay(title, scoreText, bestText) {
+  ctx.fillStyle = 'rgba(10, 10, 20, 0.78)';
+  ctx.fillRect(0, 0, W, H);
+  text(title, W / 2, H / 2 - 80, 46, '#ff7043', 'center', 'bold');
+  text(scoreText, W / 2, H / 2 - 14, 28, '#fff');
+  if (bestText) text(bestText, W / 2, H / 2 + 26, 20, '#ffd54f');
+  text('タップ / クリック: もういちど ／ 左上ボタン: メニューへ', W / 2, H / 2 + 80, 20, '#aab');
+}
+
+// ===== ベストスコアの保存（localStorage） =====
+function loadBest() {
+  try { return JSON.parse(localStorage.getItem('fushigiGamesBest')) || {}; } catch { return {}; }
+}
+const best = loadBest();
+function saveBest(key, val) {
+  if (best[key] === undefined || val > best[key]) {
+    best[key] = val;
+    try { localStorage.setItem('fushigiGamesBest', JSON.stringify(best)); } catch { /* 保存できなくてもOK */ }
+  }
+}
+
+// ===== 効果音（外部ファイル不要のビープ音） =====
+let audioCtx = null;
+function beep(freq, dur = 0.08, type = 'square', vol = 0.04) {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = type;
+    o.frequency.value = freq;
+    g.gain.value = vol;
+    o.connect(g);
+    g.connect(audioCtx.destination);
+    o.start();
+    g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + dur);
+    o.stop(audioCtx.currentTime + dur);
+  } catch { /* 音が出なくてもゲームは続行 */ }
+}
+
+// =====================================================================
+// ゲーム1: いろかさね — 行・列に色をトグルして、みほんと同じ盤面を作る
+// =====================================================================
+const game1 = {
+  n: 4,
+  INKS: ['#00bcd4', '#e91e63', '#fdd835'],
+  INK_NAMES: ['シアン', 'マゼンタ', 'イエロー'],
+  gx: 480, gy: 160, cell: 62,
+
+  enter() {
+    this.level = 1;
+    this.ink = 0;
+    this.newLevel();
+  },
+
+  blank() {
+    const g = [];
+    for (let r = 0; r < this.n; r++) {
+      const row = [];
+      for (let c = 0; c < this.n; c++) row.push([false, false, false]);
+      g.push(row);
+    }
+    return g;
+  },
+
+  toggle(board, ink, isRow, idx) {
+    for (let i = 0; i < this.n; i++) {
+      const cell = isRow ? board[idx][i] : board[i][idx];
+      cell[ink] = !cell[ink];
+    }
+  },
+
+  newLevel() {
+    const count = Math.min(2 + this.level, 9);
+    this.grid = this.blank();
+    do {
+      this.target = this.blank();
+      const used = new Set();
+      let applied = 0;
+      while (applied < count) {
+        const ink = randInt(0, 2);
+        const isRow = Math.random() < 0.5;
+        const idx = randInt(0, this.n - 1);
+        const key = ink + (isRow ? 'r' : 'c') + idx;
+        if (used.has(key)) continue; // 同じ操作2回は打ち消し合うので避ける
+        used.add(key);
+        this.toggle(this.target, ink, isRow, idx);
+        applied++;
+      }
+    } while (this.same());
+    this.par = count;
+    this.moves = 0;
+    this.cleared = false;
+  },
+
+  same() {
+    for (let r = 0; r < this.n; r++)
+      for (let c = 0; c < this.n; c++)
+        for (let i = 0; i < 3; i++)
+          if (this.grid[r][c][i] !== this.target[r][c][i]) return false;
+    return true;
+  },
+
+  inkColor(cell) {
+    const [c, m, y] = cell;
+    if (c && m && y) return '#37374a';
+    if (c && m) return '#5c6bc0';
+    if (m && y) return '#ef5350';
+    if (c && y) return '#66bb6a';
+    if (c) return '#00bcd4';
+    if (m) return '#e91e63';
+    if (y) return '#fdd835';
+    return '#f5f5f5';
+  },
+
+  colBtn(c) { return { x: this.gx + c * this.cell + (this.cell - 38) / 2, y: this.gy - 46, w: 38, h: 38 }; },
+  rowBtn(r) { return { x: this.gx - 46, y: this.gy + r * this.cell + (this.cell - 38) / 2, w: 38, h: 38 }; },
+  inkPos(i) { return { x: 130 + i * 110, y: 430 }; },
+  resetBtn: { x: 750, y: 250, w: 120, h: 40 },
+
+  onMouseDown(x, y) {
+    if (this.cleared) {
+      this.level++;
+      this.newLevel();
+      beep(880, 0.1, 'triangle');
+      return;
+    }
+    for (let i = 0; i < 3; i++) {
+      const p = this.inkPos(i);
+      if (dist(x, y, p.x, p.y) < 28) { this.ink = i; beep(440 + i * 110); return; }
+    }
+    for (let c = 0; c < this.n; c++) {
+      if (inRect(x, y, this.colBtn(c))) { this.stamp(false, c); return; }
+    }
+    for (let r = 0; r < this.n; r++) {
+      if (inRect(x, y, this.rowBtn(r))) { this.stamp(true, r); return; }
+    }
+    if (inRect(x, y, this.resetBtn)) {
+      this.grid = this.blank();
+      this.moves = 0;
+      beep(220, 0.12);
+    }
+  },
+
+  stamp(isRow, idx) {
+    this.toggle(this.grid, this.ink, isRow, idx);
+    this.moves++;
+    beep(520 + this.ink * 80, 0.06, 'sine');
+    if (this.same()) {
+      this.cleared = true;
+      saveBest('iro', this.level);
+      beep(1040, 0.25, 'triangle', 0.06);
+    }
+  },
+
+  onKey(k) {
+    if (k === '1' || k === '2' || k === '3') this.ink = Number(k) - 1;
+  },
+
+  update() {},
+
+  drawBoard(board, x, y, cell) {
+    for (let r = 0; r < this.n; r++)
+      for (let c = 0; c < this.n; c++)
+        rrect(x + c * cell + 2, y + r * cell + 2, cell - 4, cell - 4, 8, this.inkColor(board[r][c]));
+  },
+
+  draw() {
+    ctx.fillStyle = '#1b2030';
+    ctx.fillRect(0, 0, W, H);
+    topBar('🎨 いろかさね', `レベル ${this.level}　手数 ${this.moves}`);
+
+    text('みほん', 210, 130, 18, '#aab');
+    this.drawBoard(this.target, 110, 150, 50);
+
+    text('あなたの盤面', this.gx + this.n * this.cell / 2, 90, 18, '#aab');
+    this.drawBoard(this.grid, this.gx, this.gy, this.cell);
+    for (let c = 0; c < this.n; c++) {
+      const b = this.colBtn(c);
+      rrect(b.x, b.y, b.w, b.h, 8, this.INKS[this.ink]);
+      text('▼', b.x + b.w / 2, b.y + b.h / 2 + 1, 18, '#1b2030', 'center', 'bold');
+    }
+    for (let r = 0; r < this.n; r++) {
+      const b = this.rowBtn(r);
+      rrect(b.x, b.y, b.w, b.h, 8, this.INKS[this.ink]);
+      text('▶', b.x + b.w / 2, b.y + b.h / 2 + 1, 18, '#1b2030', 'center', 'bold');
+    }
+
+    text('インクをえらぶ（キー 1 / 2 / 3 でもOK）', 240, 385, 15, '#aab');
+    for (let i = 0; i < 3; i++) {
+      const p = this.inkPos(i);
+      circle(p.x, p.y, 24, this.INKS[i]);
+      if (i === this.ink) {
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 29, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      text(String(i + 1), p.x, p.y + 1, 16, '#1b2030', 'center', 'bold');
+      text(this.INK_NAMES[i], p.x, p.y + 44, 13, '#aab');
+    }
+
+    rrect(this.resetBtn.x, this.resetBtn.y, this.resetBtn.w, this.resetBtn.h, 10, '#3a3a55');
+    text('リセット', this.resetBtn.x + 60, this.resetBtn.y + 21, 17, '#fff');
+
+    text('▼ や ▶ をおすと、その列・行ぜんぶに選んだインクが重なる', W / 2, 545, 15, '#889');
+    text('同じ場所に同じ色をもう一度重ねると消える（ON/OFF式）。混ざると別の色になるよ', W / 2, 572, 15, '#889');
+
+    if (this.cleared) {
+      ctx.fillStyle = 'rgba(10, 10, 20, 0.78)';
+      ctx.fillRect(0, 0, W, H);
+      text('クリア！', W / 2, H / 2 - 70, 46, '#ffd54f', 'center', 'bold');
+      text(`手数 ${this.moves}（みほんは ${this.par} 手で作られたよ）`, W / 2, H / 2 - 5, 24, '#fff');
+      text('タップ / クリックで次のレベルへ', W / 2, H / 2 + 60, 20, '#aab');
+    }
+  }
+};
+
+// =====================================================================
+// ゲーム2: じぶんエコー — 星を取るたび「過去の自分」が増える。残像に触れたら負け
+// =====================================================================
+const game2 = {
+  DELAY: 90, // エコー1体ごとの遅れ（フレーム数 ≒ 1.5秒）
+
+  enter() {
+    this.px = W / 2;
+    this.py = H / 2 + 20;
+    this.trail = [];
+    this.echoes = []; // { grace: 出現直後の無敵時間 }
+    this.score = 0;
+    this.over = false;
+    this.t = 0;
+    this.placeStar();
+  },
+
+  placeStar() {
+    do {
+      this.sx = rand(60, W - 60);
+      this.sy = rand(100, H - 60);
+    } while (dist(this.sx, this.sy, this.px, this.py) < 160);
+  },
+
+  echoPos(i) {
+    const idx = this.trail.length - 1 - (i + 1) * this.DELAY;
+    return idx >= 0 ? this.trail[idx] : null;
+  },
+
+  onMouseDown() {
+    if (this.over) this.enter();
+  },
+
+  onKey(k) {
+    if (this.over && (k === ' ' || k === 'Enter')) this.enter();
+  },
+
+  update(dt) {
+    if (this.over) return;
+    this.t += dt;
+
+    let dx = (keys.has('ArrowRight') || keys.has('d') ? 1 : 0) - (keys.has('ArrowLeft') || keys.has('a') ? 1 : 0);
+    let dy = (keys.has('ArrowDown') || keys.has('s') ? 1 : 0) - (keys.has('ArrowUp') || keys.has('w') ? 1 : 0);
+    if (!dx && !dy && touchActive) {
+      const tdx = mouse.x - this.px;
+      const tdy = mouse.y - this.py;
+      const tl = Math.hypot(tdx, tdy);
+      if (tl > 30) { dx = tdx / tl; dy = tdy / tl; }
+    }
+    if (dx || dy) {
+      const l = Math.hypot(dx, dy);
+      this.px += dx / l * 230 * dt;
+      this.py += dy / l * 230 * dt;
+    }
+    this.px = clamp(this.px, 30, W - 30);
+    this.py = clamp(this.py, 75, H - 30);
+
+    this.trail.push({ x: this.px, y: this.py });
+    if (this.trail.length > 1200) this.trail.shift();
+
+    if (dist(this.px, this.py, this.sx, this.sy) < 28) {
+      this.score++;
+      if (this.echoes.length < 10) this.echoes.push({ grace: 1.2 });
+      this.placeStar();
+      beep(880, 0.08, 'triangle');
+      beep(1320, 0.1, 'triangle');
+    }
+
+    for (let i = 0; i < this.echoes.length; i++) {
+      const e = this.echoes[i];
+      if (e.grace > 0) { e.grace -= dt; continue; }
+      const p = this.echoPos(i);
+      if (p && dist(p.x, p.y, this.px, this.py) < 20) {
+        this.over = true;
+        saveBest('echo', this.score);
+        beep(110, 0.4, 'sawtooth', 0.06);
+      }
+    }
+  },
+
+  draw() {
+    ctx.fillStyle = '#141420';
+    ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = '#2a2a44';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(16, 60, W - 32, H - 76);
+    topBar('👻 じぶんエコー', `スコア ${this.score}　ベスト ${best.echo ?? 0}`);
+    text('矢印 / WASD で移動（スマホ：画面をタッチしたままスライド）。★を取るたび「過去の自分」が増える！', W / 2, H - 8, 14, '#778');
+
+    const pulse = 1 + Math.sin(this.t * 6) * 0.15;
+    text('★', this.sx, this.sy + 2, 34 * pulse, '#ffd54f');
+
+    for (let i = 0; i < this.echoes.length; i++) {
+      const p = this.echoPos(i);
+      if (!p) continue;
+      const ghost = this.echoes[i].grace > 0;
+      ctx.globalAlpha = ghost ? 0.25 : 0.7;
+      circle(p.x, p.y, 13, '#7c4dff');
+      circle(p.x - 4, p.y - 3, 2.5, '#fff');
+      circle(p.x + 4, p.y - 3, 2.5, '#fff');
+      ctx.globalAlpha = 1;
+    }
+
+    circle(this.px, this.py, 13, '#4caf50');
+    circle(this.px - 4, this.py - 3, 2.5, '#fff');
+    circle(this.px + 4, this.py - 3, 2.5, '#fff');
+
+    if (this.over) {
+      gameOverOverlay('つかまった！', `スコア: ${this.score}`, `ベスト: ${best.echo ?? 0}`);
+    }
+  }
+};
+
+// =====================================================================
+// ゲーム3: かずつなぎ — ±1 か 2倍/半分 の数字をなぞって消す。長いほど高得点
+// =====================================================================
+const game3 = {
+  n: 6, cell: 72, bx: 50, by: 110,
+
+  enter() {
+    this.grid = [];
+    for (let r = 0; r < this.n; r++) {
+      const row = [];
+      for (let c = 0; c < this.n; c++) row.push(randInt(1, 9));
+      this.grid.push(row);
+    }
+    this.chain = [];
+    this.drag = false;
+    this.time = 60;
+    this.score = 0;
+    this.over = false;
+    this.msg = '';
+    this.msgT = 0;
+  },
+
+  rule(a, b) { return Math.abs(a - b) === 1 || a === b * 2 || b === a * 2; },
+
+  cellAt(x, y) {
+    const c = Math.floor((x - this.bx) / this.cell);
+    const r = Math.floor((y - this.by) / this.cell);
+    if (r < 0 || c < 0 || r >= this.n || c >= this.n) return null;
+    return { r, c };
+  },
+
+  inChain(r, c) { return this.chain.some(p => p.r === r && p.c === c); },
+
+  onMouseDown(x, y) {
+    if (this.over) { this.enter(); return; }
+    const p = this.cellAt(x, y);
+    if (p) {
+      this.chain = [p];
+      this.drag = true;
+    }
+  },
+
+  onMouseMove(x, y) {
+    if (!this.drag || this.over) return;
+    const p = this.cellAt(x, y);
+    if (!p) return;
+    const last = this.chain[this.chain.length - 1];
+    if (this.chain.length >= 2) {
+      const prev = this.chain[this.chain.length - 2];
+      if (p.r === prev.r && p.c === prev.c) { this.chain.pop(); return; } // ひとつ戻る
+    }
+    if (p.r === last.r && p.c === last.c) return;
+    if (Math.abs(p.r - last.r) <= 1 && Math.abs(p.c - last.c) <= 1 &&
+        !this.inChain(p.r, p.c) &&
+        this.rule(this.grid[last.r][last.c], this.grid[p.r][p.c])) {
+      this.chain.push(p);
+      beep(300 + this.chain.length * 60, 0.05, 'sine');
+    }
+  },
+
+  onMouseUp() {
+    if (this.over) return;
+    if (this.chain.length >= 3) {
+      const len = this.chain.length;
+      const pts = len * len * 10;
+      this.score += pts;
+      this.time = Math.min(60, this.time + len * 0.5);
+      this.msg = `${len}チェーン！ +${pts}点 +${(len * 0.5).toFixed(1)}秒`;
+      this.msgT = 1.6;
+      beep(660, 0.12, 'triangle', 0.06);
+
+      for (const p of this.chain) this.grid[p.r][p.c] = 0;
+      // 上のマスを落として、空いたところに新しい数字を入れる
+      for (let c = 0; c < this.n; c++) {
+        let write = this.n - 1;
+        for (let r = this.n - 1; r >= 0; r--) {
+          if (this.grid[r][c] !== 0) {
+            this.grid[write][c] = this.grid[r][c];
+            write--;
+          }
+        }
+        for (let r = write; r >= 0; r--) this.grid[r][c] = randInt(1, 9);
+      }
+    }
+    this.chain = [];
+    this.drag = false;
+  },
+
+  update(dt) {
+    if (this.over) return;
+    this.time -= dt;
+    this.msgT -= dt;
+    if (this.time <= 0) {
+      this.time = 0;
+      this.over = true;
+      this.chain = [];
+      this.drag = false;
+      saveBest('chain', this.score);
+      beep(110, 0.4, 'sawtooth', 0.06);
+    }
+  },
+
+  center(p) {
+    return { x: this.bx + p.c * this.cell + this.cell / 2, y: this.by + p.r * this.cell + this.cell / 2 };
+  },
+
+  draw() {
+    ctx.fillStyle = '#181826';
+    ctx.fillRect(0, 0, W, H);
+    topBar('🔢 かずつなぎ', `スコア ${this.score}`);
+
+    for (let r = 0; r < this.n; r++) {
+      for (let c = 0; c < this.n; c++) {
+        const sel = this.inChain(r, c);
+        rrect(this.bx + c * this.cell + 3, this.by + r * this.cell + 3, this.cell - 6, this.cell - 6, 10,
+              sel ? '#ff9800' : '#2c2c44');
+        const v = this.grid[r][c];
+        text(String(v), this.bx + c * this.cell + this.cell / 2, this.by + r * this.cell + this.cell / 2 + 1,
+             30, sel ? '#fff' : `hsl(${v * 36}, 75%, 65%)`, 'center', 'bold');
+      }
+    }
+
+    if (this.chain.length >= 2) {
+      ctx.strokeStyle = 'rgba(255, 183, 77, 0.9)';
+      ctx.lineWidth = 7;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      const s = this.center(this.chain[0]);
+      ctx.moveTo(s.x, s.y);
+      for (let i = 1; i < this.chain.length; i++) {
+        const p = this.center(this.chain[i]);
+        ctx.lineTo(p.x, p.y);
+      }
+      ctx.stroke();
+    }
+
+    // 右側の情報パネル
+    const hx = 540;
+    text('のこり時間', hx, 120, 16, '#aab', 'left');
+    rrect(hx, 135, 320, 18, 9, '#2c2c44');
+    if (this.time > 0) rrect(hx, 135, Math.max(10, 320 * this.time / 60), 18, 9, this.time < 10 ? '#ef5350' : '#4dd0e1');
+    text(`${Math.ceil(this.time)}秒`, hx + 320, 122, 15, '#fff', 'right');
+
+    text(`ベスト: ${best.chain ?? 0}点`, hx, 180, 17, '#ffd54f', 'left');
+
+    text('つなぎ方ルール', hx, 240, 18, '#fff', 'left', 'bold');
+    text('・となり合うマスをなぞる（ななめOK）', hx, 272, 15, '#aab', 'left');
+    text('・差が1（例: 4 → 5、7 → 6）', hx, 298, 15, '#aab', 'left');
+    text('・2倍か半分（例: 3 → 6、8 → 4）', hx, 324, 15, '#aab', 'left');
+    text('・3つ以上つないで指をはなすと消える', hx, 350, 15, '#aab', 'left');
+    text('・長くつなぐほど 点数も時間ボーナスもUP！', hx, 376, 15, '#aab', 'left');
+    text('・まちがえたら ひとつ前のマスに戻れば取り消し', hx, 402, 15, '#aab', 'left');
+
+    if (this.drag && this.chain.length >= 2) {
+      const len = this.chain.length;
+      text(`いま ${len}個 → はなすと +${len * len * 10}点`, hx, 450, 18, '#ff9800', 'left', 'bold');
+    }
+    if (this.msgT > 0) text(this.msg, this.bx + this.n * this.cell / 2, 90, 20, '#ffd54f', 'center', 'bold');
+
+    if (this.over) {
+      gameOverOverlay('タイムアップ！', `スコア: ${this.score}点`, `ベスト: ${best.chain ?? 0}点`);
+    }
+  }
+};
+
+// =====================================================================
+// ゲーム4: ひっぱりスター — 長おしの引力だけでボールを操ってリングをくぐる
+// =====================================================================
+const STARS_BG = Array.from({ length: 70 }, () => ({ x: rand(0, W), y: rand(0, H), r: rand(0.5, 1.8) }));
+
+const game4 = {
+  enter() {
+    this.x = W / 2;
+    this.y = H / 2;
+    this.vx = 0;
+    this.vy = 0;
+    this.score = 0;
+    this.over = false;
+    this.hazards = [];
+    this.trail = [];
+    this.t = 0;
+    this.placeRing();
+  },
+
+  placeRing() {
+    do {
+      this.rx = rand(80, W - 80);
+      this.ry = rand(110, H - 80);
+    } while (dist(this.rx, this.ry, this.x, this.y) < 180);
+  },
+
+  onMouseDown() {
+    if (this.over) this.enter();
+  },
+
+  update(dt) {
+    if (this.over) return;
+    this.t += dt;
+
+    // 長おし中はマウスに引き寄せられる
+    if (mouse.down) {
+      const d = dist(mouse.x, mouse.y, this.x, this.y);
+      if (d > 5) {
+        this.vx += (mouse.x - this.x) / d * 800 * dt;
+        this.vy += (mouse.y - this.y) / d * 800 * dt;
+      }
+    }
+    const drag = Math.pow(0.4, dt); // 空気抵抗
+    this.vx *= drag;
+    this.vy *= drag;
+    this.x += this.vx * dt;
+    this.y += this.vy * dt;
+
+    // 壁ではね返る
+    if (this.x < 26) { this.x = 26; this.vx *= -0.7; }
+    if (this.x > W - 26) { this.x = W - 26; this.vx *= -0.7; }
+    if (this.y < 70) { this.y = 70; this.vy *= -0.7; }
+    if (this.y > H - 26) { this.y = H - 26; this.vy *= -0.7; }
+
+    this.trail.push({ x: this.x, y: this.y });
+    if (this.trail.length > 28) this.trail.shift();
+
+    if (dist(this.x, this.y, this.rx, this.ry) < 30) {
+      this.score++;
+      beep(880, 0.08, 'triangle');
+      this.placeRing();
+      // 2リングごとにトゲ玉が増える
+      if (this.score % 2 === 0 && this.hazards.length < 8) {
+        let hx, hy;
+        do { hx = rand(60, W - 60); hy = rand(90, H - 60); } while (dist(hx, hy, this.x, this.y) < 220);
+        const ang = rand(0, Math.PI * 2);
+        const sp = 110 + this.score * 6;
+        this.hazards.push({ x: hx, y: hy, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp });
+      }
+    }
+
+    for (const h of this.hazards) {
+      h.x += h.vx * dt;
+      h.y += h.vy * dt;
+      if (h.x < 36 || h.x > W - 36) { h.vx *= -1; h.x = clamp(h.x, 36, W - 36); }
+      if (h.y < 80 || h.y > H - 36) { h.vy *= -1; h.y = clamp(h.y, 80, H - 36); }
+      if (dist(h.x, h.y, this.x, this.y) < 24) {
+        this.over = true;
+        saveBest('orbit', this.score);
+        beep(110, 0.4, 'sawtooth', 0.06);
+      }
+    }
+  },
+
+  draw() {
+    ctx.fillStyle = '#0e0e1c';
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = 0.5;
+    for (const s of STARS_BG) circle(s.x, s.y, s.r, '#fff');
+    ctx.globalAlpha = 1;
+    topBar('🪐 ひっぱりスター', `リング ${this.score}　ベスト ${best.orbit ?? 0}`);
+    text('クリック長おし＝マウスにボールが引き寄せられる。リングをくぐれ！赤いトゲ玉にぶつかるな！', W / 2, H - 8, 14, '#778');
+
+    // リング
+    const pr = 26 + Math.sin(this.t * 5) * 4;
+    ctx.strokeStyle = 'rgba(255, 213, 79, 0.35)';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(this.rx, this.ry, pr + 8, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = '#ffd54f';
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.arc(this.rx, this.ry, 26, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // 引力ビーム
+    if (mouse.down && !this.over) {
+      ctx.strokeStyle = 'rgba(77, 208, 225, 0.5)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 8]);
+      ctx.beginPath();
+      ctx.moveTo(this.x, this.y);
+      ctx.lineTo(mouse.x, mouse.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      circle(mouse.x, mouse.y, 5, 'rgba(77, 208, 225, 0.6)');
+    }
+
+    // ボールの軌跡と本体
+    for (let i = 0; i < this.trail.length; i++) {
+      ctx.globalAlpha = i / this.trail.length * 0.4;
+      circle(this.trail[i].x, this.trail[i].y, 7, '#4dd0e1');
+    }
+    ctx.globalAlpha = 1;
+    circle(this.x, this.y, 11, '#4dd0e1');
+
+    // トゲ玉
+    for (const h of this.hazards) {
+      ctx.strokeStyle = '#ef5350';
+      ctx.lineWidth = 3;
+      for (let i = 0; i < 8; i++) {
+        const a = i / 8 * Math.PI * 2 + this.t * 2;
+        ctx.beginPath();
+        ctx.moveTo(h.x + Math.cos(a) * 10, h.y + Math.sin(a) * 10);
+        ctx.lineTo(h.x + Math.cos(a) * 18, h.y + Math.sin(a) * 18);
+        ctx.stroke();
+      }
+      circle(h.x, h.y, 12, '#ef5350');
+    }
+
+    if (this.over) {
+      gameOverOverlay('クラッシュ！', `くぐったリング: ${this.score}個`, `ベスト: ${best.orbit ?? 0}個`);
+    }
+  }
+};
+
+// =====================================================================
+// ゲーム5: ふくらみパルス — 大きいほどスコアUP、でも当たりやすい。クリックで縮む
+// =====================================================================
+const game5 = {
+  cx: W / 2,
+  cy: H / 2 + 20,
+
+  enter() {
+    this.r = 16;
+    this.score = 0;
+    this.t = 0;
+    this.shards = [];
+    this.spawnT = 1.0;
+    this.over = false;
+  },
+
+  shrink() {
+    this.r = 14;
+    beep(180, 0.06, 'sine', 0.05);
+  },
+
+  onMouseDown() {
+    if (this.over) { this.enter(); return; }
+    this.shrink();
+  },
+
+  onKey(k) {
+    if (k === ' ') {
+      if (this.over) this.enter();
+      else this.shrink();
+    }
+  },
+
+  spawnShard() {
+    // 画面の外周のどこかから、中心付近をねらって飛んでくる
+    const side = randInt(0, 3);
+    let x, y;
+    if (side === 0) { x = rand(0, W); y = -30; }
+    else if (side === 1) { x = rand(0, W); y = H + 30; }
+    else if (side === 2) { x = -30; y = rand(0, H); }
+    else { x = W + 30; y = rand(0, H); }
+    const tx = this.cx + rand(-110, 110);
+    const ty = this.cy + rand(-110, 110);
+    const d = dist(x, y, tx, ty);
+    const sp = rand(300, 380) + Math.min(this.t * 5, 250);
+    this.shards.push({ x, y, vx: (tx - x) / d * sp, vy: (ty - y) / d * sp, warn: 0.8 });
+  },
+
+  update(dt) {
+    if (this.over) return;
+    this.t += dt;
+    this.r = Math.min(this.r + 13 * dt, 85);
+    this.score += this.r * dt * 0.2; // 大きいほどスコアが増える
+
+    this.spawnT -= dt;
+    if (this.spawnT <= 0) {
+      this.spawnT = Math.max(0.4, 1.4 - this.t * 0.025);
+      this.spawnShard();
+    }
+
+    for (const s of this.shards) {
+      if (s.warn > 0) {
+        s.warn -= dt;
+        continue;
+      }
+      s.x += s.vx * dt;
+      s.y += s.vy * dt;
+      if (dist(s.x, s.y, this.cx, this.cy) < this.r + 8) {
+        this.over = true;
+        saveBest('pulse', Math.floor(this.score));
+        beep(110, 0.4, 'sawtooth', 0.06);
+      }
+    }
+    this.shards = this.shards.filter(s => s.warn > 0 || (s.x > -60 && s.x < W + 60 && s.y > -60 && s.y < H + 60));
+  },
+
+  draw() {
+    ctx.fillStyle = '#171722';
+    ctx.fillRect(0, 0, W, H);
+    topBar('💥 ふくらみパルス', `スコア ${Math.floor(this.score)}　ベスト ${best.pulse ?? 0}`);
+    text('何もしないとふくらむ。大きいほどスコアが増えるが、当たりやすい。クリック（またはスペース）で小さくなる！', W / 2, H - 8, 14, '#778');
+
+    // 最大サイズと最小サイズのガイド線
+    ctx.setLineDash([5, 7]);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(this.cx, this.cy, 85, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(this.cx, this.cy, 14, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // 警告ライン → トゲ
+    for (const s of this.shards) {
+      if (s.warn > 0) {
+        const blink = 0.12 + 0.2 * Math.abs(Math.sin(this.t * 12));
+        ctx.strokeStyle = `rgba(255, 82, 82, ${blink})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(s.x, s.y);
+        ctx.lineTo(s.x + s.vx * 10, s.y + s.vy * 10);
+        ctx.stroke();
+        circle(s.x, s.y, 8, `rgba(255, 82, 82, ${blink + 0.3})`);
+      } else {
+        ctx.globalAlpha = 0.35;
+        circle(s.x - s.vx * 0.03, s.y - s.vy * 0.03, 6, '#ef5350');
+        ctx.globalAlpha = 1;
+        circle(s.x, s.y, 8, '#ef5350');
+      }
+    }
+
+    // プレイヤー（大きいほど緑→赤）
+    const ratio = (this.r - 14) / (85 - 14);
+    circle(this.cx, this.cy, this.r, `hsl(${130 - 130 * ratio}, 70%, 55%)`);
+    text(String(Math.floor(this.score)), this.cx, this.cy + 1, Math.max(16, this.r * 0.5), '#fff', 'center', 'bold');
+
+    if (this.over) {
+      gameOverOverlay('はじけた！', `スコア: ${Math.floor(this.score)}`, `ベスト: ${best.pulse ?? 0}`);
+    }
+  }
+};
+
+// ===== ゲーム一覧 =====
+const GAME_LIST = [
+  { icon: '🎨', name: 'いろかさね', d1: '行と列に色を重ねて', d2: 'みほんと同じ盤面を作るパズル', scene: game1, bestKey: 'iro', bestLabel: 'ベスト Lv' },
+  { icon: '👻', name: 'じぶんエコー', d1: '星を取るたび過去の自分が出現', d2: '自分の残像にぶつかったら負け', scene: game2, bestKey: 'echo', bestLabel: 'ベスト' },
+  { icon: '🔢', name: 'かずつなぎ', d1: '±1か 2倍/半分 の数字をなぞって', d2: '長いチェーンで高得点', scene: game3, bestKey: 'chain', bestLabel: 'ベスト' },
+  { icon: '🪐', name: 'ひっぱりスター', d1: '長おしの引力だけでボールを操り', d2: 'リングをくぐれ。トゲ玉に注意', scene: game4, bestKey: 'orbit', bestLabel: 'ベスト' },
+  { icon: '💥', name: 'ふくらみパルス', d1: '大きいほどスコアが増えるが', d2: '当たりやすい。クリックで縮め！', scene: game5, bestKey: 'pulse', bestLabel: 'ベスト' },
+];
+
+// ===== メニュー画面 =====
+const menuScene = {
+  t: 0,
+
+  enter() {},
+
+  cardRect(i) {
+    const w = 256, h = 170;
+    if (i < 3) return { x: 48 + i * (w + 18), y: 150, w, h };
+    return { x: 185 + (i - 3) * (w + 18), y: 345, w, h };
+  },
+
+  onMouseDown(x, y) {
+    for (let i = 0; i < GAME_LIST.length; i++) {
+      if (inRect(x, y, this.cardRect(i))) {
+        beep(660, 0.08, 'triangle');
+        setScene(GAME_LIST[i].scene);
+        return;
+      }
+    }
+  },
+
+  update(dt) { this.t += dt; },
+
+  draw() {
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, '#1c1c30');
+    grad.addColorStop(1, '#12121e');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    text('ふしぎゲームズ ５', W / 2, 62, 44, '#fff', 'center', 'bold');
+    text('〜 シンプルだけど、奥が深い 〜', W / 2, 105, 18, '#8888aa');
+
+    for (let i = 0; i < GAME_LIST.length; i++) {
+      const g = GAME_LIST[i];
+      const r = this.cardRect(i);
+      const hover = inRect(mouse.x, mouse.y, r);
+      rrect(r.x, r.y - (hover ? 4 : 0), r.w, r.h, 14, hover ? '#34345c' : '#262640');
+      const oy = hover ? -4 : 0;
+      text(g.icon, r.x + r.w / 2, r.y + 42 + oy, 36);
+      text(g.name, r.x + r.w / 2, r.y + 84 + oy, 22, '#fff', 'center', 'bold');
+      text(g.d1, r.x + r.w / 2, r.y + 114 + oy, 13, '#aab');
+      text(g.d2, r.x + r.w / 2, r.y + 133 + oy, 13, '#aab');
+      if (best[g.bestKey] !== undefined) {
+        text(`${g.bestLabel} ${best[g.bestKey]}`, r.x + r.w / 2, r.y + 156 + oy, 13, '#ffd54f');
+      }
+    }
+
+    text('あそびたいゲームをクリック！　ゲーム中は ESC キーでこのメニューに戻れます', W / 2, 560, 16, '#8888aa');
+  }
+};
+
+// ===== シーン管理と入力 =====
+let scene = null;
+function setScene(s) {
+  scene = s;
+  if (s.enter) s.enter();
+}
+
+window.addEventListener('keydown', (e) => {
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(e.key)) e.preventDefault();
+  const k = normKey(e.key);
+  keys.add(k);
+  if (k === 'Escape' && scene !== menuScene) { setScene(menuScene); return; }
+  if (scene.onKey) scene.onKey(k);
+});
+window.addEventListener('keyup', (e) => keys.delete(normKey(e.key)));
+window.addEventListener('blur', () => { keys.clear(); mouse.down = false; });
+
+function handleDown(p) {
+  mouse.x = p.x;
+  mouse.y = p.y;
+  mouse.down = true;
+  if (scene !== menuScene && inRect(p.x, p.y, MENU_BTN)) { setScene(menuScene); return; }
+  if (scene.onMouseDown) scene.onMouseDown(p.x, p.y);
+}
+function handleMove(p) {
+  mouse.x = p.x;
+  mouse.y = p.y;
+  if (scene.onMouseMove) scene.onMouseMove(p.x, p.y);
+}
+function handleUp() {
+  mouse.down = false;
+  if (scene.onMouseUp) scene.onMouseUp();
+}
+
+canvas.addEventListener('mousedown', (e) => handleDown(canvasPos(e)));
+window.addEventListener('mouseup', () => handleUp());
+canvas.addEventListener('mousemove', (e) => handleMove(canvasPos(e)));
+
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  touchActive = true;
+  const t = e.touches[0];
+  handleDown(canvasPos({ clientX: t.clientX, clientY: t.clientY }));
+}, { passive: false });
+canvas.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  const t = e.touches[0];
+  handleMove(canvasPos({ clientX: t.clientX, clientY: t.clientY }));
+}, { passive: false });
+canvas.addEventListener('touchend', (e) => {
+  e.preventDefault();
+  touchActive = false;
+  handleUp();
+}, { passive: false });
+
+// ===== メインループ =====
+setScene(menuScene);
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+  scene.update(dt);
+  scene.draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
