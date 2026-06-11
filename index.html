@@ -917,7 +917,14 @@ const menuScene = {
     return { x: 185 + (i - 3) * (w + 18), y: 345, w, h };
   },
 
+  installBtn: { x: W / 2 - 190, y: 528, w: 380, h: 38 },
+
   onMouseDown(x, y) {
+    if (installPrompt && inRect(x, y, this.installBtn)) {
+      installPrompt.prompt();
+      installPrompt = null;
+      return;
+    }
     for (let i = 0; i < GAME_LIST.length; i++) {
       if (inRect(x, y, this.cardRect(i))) {
         beep(660, 0.08, 'triangle');
@@ -954,7 +961,14 @@ const menuScene = {
       }
     }
 
-    text('あそびたいゲームをクリック！　ゲーム中は ESC キーでこのメニューに戻れます', W / 2, 560, 16, '#8888aa');
+    if (installPrompt) {
+      const b = this.installBtn;
+      const hover = inRect(mouse.x, mouse.y, b);
+      rrect(b.x, b.y, b.w, b.h, 10, hover ? '#2a4a90' : '#1a3070');
+      text('📱 ホーム画面に追加してフルスクリーンで遊ぶ', W / 2, b.y + b.h / 2, 15, '#88bbff');
+    } else {
+      text('あそびたいゲームをタップ！　ゲーム中は左上ボタンでメニューへ', W / 2, 560, 15, '#8888aa');
+    }
   }
 };
 
@@ -1012,6 +1026,13 @@ canvas.addEventListener('touchend', (e) => {
   touchActive = false;
   handleUp();
 }, { passive: false });
+
+// ===== PWAインストールプロンプト =====
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installPrompt = e;
+});
 
 // ===== フルスクリーン + 横向きロック（初回タッチ時） =====
 document.addEventListener('touchstart', async () => {
