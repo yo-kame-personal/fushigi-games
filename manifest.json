@@ -1,0 +1,11 @@
+{
+  "name": "ふしぎゲームズ５",
+  "short_name": "ふしぎゲームズ",
+  "description": "シンプルだけど奥が深い5つのミニゲーム集",
+  "start_url": "/fushigi-games/",
+  "scope": "/fushigi-games/",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#101018",
+  "theme_color": "#101018"
+}
