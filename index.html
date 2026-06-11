@@ -1027,6 +1027,11 @@ canvas.addEventListener('touchend', (e) => {
   handleUp();
 }, { passive: false });
 
+// ===== Service Worker 登録 =====
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/fushigi-games/sw.js').catch(() => {});
+}
+
 // ===== PWAインストールプロンプト =====
 let installPrompt = null;
 window.addEventListener('beforeinstallprompt', (e) => {
