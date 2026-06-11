@@ -20,6 +20,23 @@
     box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
     cursor: pointer;
   }
+
+  /* 縦向きスマホ: canvasを90度回転して画面幅いっぱいに表示 */
+  @media (orientation: portrait) and (max-width: 767px) {
+    body { overflow: hidden; min-height: 100vh; }
+    canvas {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      /* 回転後の視覚幅 = canvas高さ ≤ 画面幅 → cw ≤ 画面幅*(900/600) */
+      /* 回転後の視覚高さ = canvas幅 ≤ 画面高さ → cw ≤ 100vh */
+      width: min(100vh, calc(150vw));
+      height: auto;
+      transform: translateX(-50%) translateY(-50%) rotate(90deg);
+      border-radius: 0;
+      box-shadow: none;
+    }
+  }
 </style>
 </head>
 <body>
@@ -41,6 +58,13 @@ function normKey(k) { return k.length === 1 ? k.toLowerCase() : k; }
 
 function canvasPos(e) {
   const r = canvas.getBoundingClientRect();
+  if (window.innerHeight > window.innerWidth) {
+    // rotate(90deg) 適用時: 画面X→canvas Y、画面Y→canvas X（反転）
+    return {
+      x: (r.bottom - e.clientY) * (W / r.height),
+      y: (e.clientX - r.left) * (H / r.width)
+    };
+  }
   return { x: (e.clientX - r.left) * (W / r.width), y: (e.clientY - r.top) * (H / r.height) };
 }
 
