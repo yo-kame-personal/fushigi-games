@@ -14,23 +14,35 @@
     background: #101018;
   }
   canvas {
-    width: min(900px, 96vw, 144dvh);
+    width: min(900px, 96vw, 144vh);
     height: auto;
     border-radius: 12px;
     box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
     cursor: pointer;
   }
 
-  /* 縦向きスマホ: canvasを90度回転して画面幅いっぱいに表示 */
+  /* 横向きスマホ: position:fixed で URLバー関係なく画面中央に固定 */
+  /* max-height:500px でスマホ横向きを判定（タブレットは除外）*/
+  @media (orientation: landscape) and (max-height: 500px) {
+    body { overflow: hidden; margin: 0; min-height: unset; }
+    canvas {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translateX(-50%) translateY(-50%);
+      /* 96vh で高さに収まる幅を計算: canvas幅 ≤ 画面高さ×(900/600) */
+      width: min(900px, 96vw, 144vh);
+    }
+  }
+
+  /* 縦向きスマホ: 90度回転して画面幅いっぱいに表示 */
   @media (orientation: portrait) and (max-width: 767px) {
     body { overflow: hidden; min-height: 100vh; }
     canvas {
       position: fixed;
       top: 50%;
       left: 50%;
-      /* 回転後の視覚幅 = canvas高さ ≤ 画面幅 → cw ≤ 画面幅*(900/600) */
-      /* 回転後の視覚高さ = canvas幅 ≤ 画面高さ → cw ≤ 100vh */
-      width: min(100vh, calc(150vw));
+      width: min(100vh, 150vw);
       height: auto;
       transform: translateX(-50%) translateY(-50%) rotate(90deg);
       border-radius: 0;
